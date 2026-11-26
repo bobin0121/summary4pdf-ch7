@@ -1,10 +1,10 @@
 // 2026-11-26 10:35 KST
 import { describe, expect, it } from "vitest";
 import { ERROR_CODES } from "../src/lib/errors";
+import { MAX_PDF_BYTES as MAX_BYTES } from "../src/lib/limits";
 import {
   NETWORK_ERROR,
   errorView,
-  MAX_BYTES,
   formatSize,
   parseResponse,
   validateFile,
@@ -41,20 +41,42 @@ describe("parseResponse", () => {
       truncated: false,
       model: "m",
     };
-    expect(parseResponse(true, body).ok).toBe(true);
+    expect(parseResponse(true, body, 200).ok).toBe(true);
   });
   it("서버 오류 코드로 안내를 찾는다(서버 문구가 달라도 같은 문구)", () => {
     expect(
-      parseResponse(false, { error: { code: "NO_TEXT", message: "문구" } }),
+      parseResponse(false, { error: { code: "NO_TEXT", message: "문구" } }, 422),
     ).toEqual({ ok: false, error: errorView("NO_TEXT") });
   });
   it("형식이 이상하거나 모르는 코드면 AI 전체 실패 안내", () => {
     const fallback = { ok: false, error: errorView("AI_FAILED") };
-    expect(parseResponse(false, null)).toEqual(fallback);
-    expect(parseResponse(true, {})).toEqual(fallback);
+    expect(parseResponse(false, null, 500)).toEqual(fallback);
+    expect(parseResponse(true, {}, 200)).toEqual(fallback);
     expect(
-      parseResponse(false, { error: { code: "INTERNAL", message: "x" } }),
+      parseResponse(false, { error: { code: "INTERNAL", message: "x" } }, 500),
     ).toEqual(fallback);
+  });
+});
+
+describe("parseResponse: 본문에 오류 코드가 없으면 HTTP 상태로 정한다", () => {
+  const cases: [number, string][] = [
+    [504, "TIMEOUT"],
+    [413, "FILE_TOO_LARGE"],
+    [429, "RATE_LIMITED"],
+    [502, "AI_FAILED"],
+    [500, "AI_FAILED"],
+    [404, "AI_FAILED"],
+  ];
+  it.each(cases)("상태 %i는 %s 안내", (status, code) => {
+    const expected = { ok: false, error: errorView(code) };
+    expect(parseResponse(false, null, status)).toEqual(expected);
+    expect(parseResponse(false, { message: "html 아님" }, status)).toEqual(expected);
+    expect(parseResponse(false, { error: {} }, status)).toEqual(expected);
+  });
+  it("본문에 코드가 있으면 상태보다 코드가 우선한다", () => {
+    expect(
+      parseResponse(false, { error: { code: "NO_TEXT", message: "x" } }, 504),
+    ).toEqual({ ok: false, error: errorView("NO_TEXT") });
   });
 });
 
