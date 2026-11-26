@@ -4,7 +4,6 @@ import { ApiError, ERRORS } from "../../../lib/errors";
 import { checkPdf, extractText, prepareText } from "../../../lib/pdf";
 import { summarize } from "../../../lib/summarize";
 
-export const runtime = "nodejs";
 export const maxDuration = 60;
 
 function errorResponse(code: string, message: string, status: number) {
