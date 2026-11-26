@@ -88,3 +88,11 @@ export class ApiError extends Error {
     this.status = ERRORS[code].status;
   }
 }
+
+// 브라우저가 요청을 끊었다는 뜻. 응답을 받을 쪽이 없으므로 오류 코드를 만들지 않는다.
+export class ClientAbortedError extends Error {
+  constructor() {
+    super("client aborted");
+    this.name = "ClientAbortedError";
+  }
+}
