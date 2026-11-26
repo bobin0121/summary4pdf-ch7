@@ -19,13 +19,16 @@ const SYSTEM_PROMPT = `당신은 문서 요약 도우미입니다. 반드시 한
   "concepts": [{ "name": "핵심 개념 이름", "description": "한두 문장 설명" }],
   "definitions": [{ "term": "용어 또는 공식", "text": "정의 또는 공식 설명" }]
 }
+영어 전문 용어는 한국어 뒤에 괄호로 원어를 함께 적으세요(예: 과적합(overfitting)). 수식과 기호는 원문 그대로 두세요.
 concepts는 1개 이상 5개 이하로 쓰고, 정의나 공식이 없으면 definitions는 빈 배열로 두세요.`;
 
 class AttemptFailed extends Error {
   readonly rateLimited: boolean;
-  constructor(rateLimited = false) {
+  readonly timedOut: boolean;
+  constructor(rateLimited = false, timedOut = false) {
     super("attempt failed");
     this.rateLimited = rateLimited;
+    this.timedOut = timedOut;
   }
 }
 
@@ -99,7 +102,7 @@ async function callModel(
   const timeout = new Promise<never>((_, reject) => {
     timer = setTimeout(() => {
       controller.abort();
-      reject(new AttemptFailed());
+      reject(new AttemptFailed(false, true));
     }, TIMEOUT_MS);
   });
   const attempt = (async () => {
@@ -147,12 +150,18 @@ export async function summarize(
   const apiKey = process.env.OPENROUTER_API_KEY;
   if (!apiKey) throw new ApiError("AI_FAILED");
   let sawRateLimit = false;
+  let sawTimeout = false;
   for (const model of MODELS) {
     try {
       return { summary: await callModel(model, text, apiKey), model };
     } catch (e) {
-      if (e instanceof AttemptFailed && e.rateLimited) sawRateLimit = true;
+      if (e instanceof AttemptFailed) {
+        if (e.rateLimited) sawRateLimit = true;
+        if (e.timedOut) sawTimeout = true;
+      }
     }
   }
-  throw new ApiError(sawRateLimit ? "RATE_LIMITED" : "AI_FAILED");
+  throw new ApiError(
+    sawRateLimit ? "RATE_LIMITED" : sawTimeout ? "TIMEOUT" : "AI_FAILED",
+  );
 }

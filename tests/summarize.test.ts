@@ -76,6 +76,44 @@ describe("summarize", () => {
     expect(r.model).toBe(M2);
   });
 
+  const hang = () => (_u: string, init: RequestInit) =>
+    new Promise((_, reject) => {
+      init.signal!.addEventListener("abort", () =>
+        reject(new DOMException("aborted", "AbortError")),
+      );
+    });
+
+  it("둘 다 시간 초과면 TIMEOUT", async () => {
+    vi.useFakeTimers();
+    fetchMock.mockImplementation(hang());
+    const p = summarize("본문");
+    const assertion = expect(p).rejects.toMatchObject({ code: "TIMEOUT" });
+    await vi.advanceTimersByTimeAsync(50_000);
+    await assertion;
+  });
+
+  it("429와 시간 초과가 섞이면 RATE_LIMITED", async () => {
+    vi.useFakeTimers();
+    fetchMock
+      .mockResolvedValueOnce(status(429))
+      .mockImplementationOnce(hang());
+    const p = summarize("본문");
+    const assertion = expect(p).rejects.toMatchObject({
+      code: "RATE_LIMITED",
+    });
+    await vi.advanceTimersByTimeAsync(25_000);
+    await assertion;
+  });
+
+  it("프롬프트에 영어 용어 병기와 수식 원문 유지 규칙이 들어 있다", async () => {
+    fetchMock.mockResolvedValueOnce(ok(JSON.stringify(GOOD)));
+    await summarize("본문");
+    const prompt: string = bodyOf(0).messages[0].content;
+    expect(prompt).toContain("괄호로 원어");
+    expect(prompt).toContain("과적합(overfitting)");
+    expect(prompt).toContain("수식과 기호는 원문 그대로");
+  });
+
   it("빈 content면 2순위 모델로 넘어간다", async () => {
     fetchMock
       .mockResolvedValueOnce(ok("  "))
