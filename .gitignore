@@ -2,3 +2,18 @@
 .env.*
 !.env.example
 .claude/settings.local.json
+
+# Next.js 추가 항목
+/node_modules
+/.next/
+/out/
+/build
+/coverage
+*.tsbuildinfo
+next-env.d.ts
+.vercel
+.DS_Store
+npm-debug.log*
+
+# 시험용 PDF
+samples/
