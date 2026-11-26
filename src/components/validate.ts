@@ -1,9 +1,8 @@
 // 2026-11-26 10:35 KST
 // 브라우저 쪽 빠른 검사와 응답 해석(순수 함수).
 import { ERRORS, type ErrorCode, type ErrorInfo } from "../lib/errors";
+import { MAX_PDF_BYTES } from "../lib/limits";
 import type { SummarizeError, SummarizeSuccess } from "../lib/types";
-
-export const MAX_BYTES = 4 * 1024 * 1024;
 
 export type ErrorView = Pick<ErrorInfo, "title" | "message" | "retry">;
 
@@ -33,7 +32,7 @@ export function validateFile(file: {
     file.name.toLowerCase().endsWith(".pdf") &&
     (file.type === "application/pdf" || file.type === "");
   if (!looksPdf) return errorView("NOT_PDF");
-  if (file.size > MAX_BYTES) return errorView("FILE_TOO_LARGE");
+  if (file.size > MAX_PDF_BYTES) return errorView("FILE_TOO_LARGE");
   return null;
 }
 
@@ -42,14 +41,24 @@ export function formatSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
 }
 
-// 응답 본문(이미 JSON 해석한 값)을 성공 또는 오류 안내로 가른다.
+// 본문에 오류 코드가 없을 때(프록시나 플랫폼이 만든 응답 등) HTTP 상태로 코드를 짐작한다.
+function codeFromStatus(status: number): ErrorCode {
+  if (status === 504) return "TIMEOUT";
+  if (status === 413) return "FILE_TOO_LARGE";
+  if (status === 429) return "RATE_LIMITED";
+  return "AI_FAILED";
+}
+
+// 응답 본문(이미 JSON 해석한 값)과 HTTP 상태를 성공 또는 오류 안내로 가른다.
 export function parseResponse(
   ok: boolean,
   body: unknown,
+  status: number,
 ): { ok: true; data: SummarizeSuccess } | { ok: false; error: ErrorView } {
   const b = body as Partial<SummarizeSuccess & SummarizeError> | null;
   if (ok && b && b.summary && typeof b.summary.oneLine === "string") {
     return { ok: true, data: b as SummarizeSuccess };
   }
-  return { ok: false, error: errorView(b?.error?.code) };
+  const code = b?.error?.code ?? codeFromStatus(status);
+  return { ok: false, error: errorView(code) };
 }

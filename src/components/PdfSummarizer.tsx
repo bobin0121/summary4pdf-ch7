@@ -1,29 +1,24 @@
 // 2026-11-26 10:35 KST
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import type { Summary } from "../lib/types";
+import { useEffect, useReducer, useRef, useState } from "react";
+import { initialState, reduce } from "./screenState";
 import {
   NETWORK_ERROR,
-  type ErrorView,
   formatSize,
   parseResponse,
   validateFile,
 } from "./validate";
 
-type State =
-  | { kind: "upload"; notice?: string }
-  | { kind: "loading"; file: File }
-  | { kind: "result"; file: File; summary: Summary; truncated: boolean }
-  | { kind: "error"; error: ErrorView; file?: File };
-
 export default function PdfSummarizer() {
-  const [state, setState] = useState<State>({ kind: "upload" });
+  const [state, dispatch] = useReducer(reduce, initialState);
   const [dragging, setDragging] = useState(false);
   const [seconds, setSeconds] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const abortRef = useRef<AbortController | null>(null);
   const headingRef = useRef<HTMLHeadingElement>(null);
+  const dropzoneRef = useRef<HTMLDivElement>(null);
+  const prevKindRef = useRef(state.kind);
 
   const loading = state.kind === "loading";
 
@@ -37,32 +32,45 @@ export default function PdfSummarizer() {
     return () => clearInterval(id);
   }, [loading]);
 
-  // F1: 업로드 영역 밖에 파일을 놓아도 브라우저가 파일을 열지 않게 한다.
+  // F1: 업로드 영역 밖에 파일을 놓아도 브라우저가 파일을 열지 않게 하고, 놓을 수 없는 곳임을 커서로 보여 준다.
   useEffect(() => {
-    const block = (e: Event) => e.preventDefault();
-    window.addEventListener("dragover", block);
-    window.addEventListener("drop", block);
+    const onDragOver = (e: Event) => {
+      e.preventDefault();
+      const target = e.target;
+      const inside =
+        target instanceof Node && dropzoneRef.current?.contains(target);
+      const dt = (e as DragEvent).dataTransfer;
+      if (!inside && dt) dt.dropEffect = "none";
+    };
+    const onDrop = (e: Event) => e.preventDefault();
+    window.addEventListener("dragover", onDragOver);
+    window.addEventListener("drop", onDrop);
     return () => {
-      window.removeEventListener("dragover", block);
-      window.removeEventListener("drop", block);
+      window.removeEventListener("dragover", onDragOver);
+      window.removeEventListener("drop", onDrop);
     };
   }, []);
 
-  // 상태가 바뀌면 새 제목으로 포커스를 옮겨 화면 낭독기가 알리게 한다.
+  // 상태가 바뀌면 새 제목으로, 업로드 상태로 돌아오면 업로드 영역으로 포커스를 옮긴다.
   useEffect(() => {
-    if (state.kind !== "upload") headingRef.current?.focus();
+    if (prevKindRef.current === state.kind) return;
+    prevKindRef.current = state.kind;
+    if (state.kind === "upload") dropzoneRef.current?.focus();
+    else headingRef.current?.focus();
   }, [state.kind]);
 
   async function start(file: File) {
     const problem = validateFile(file);
     if (problem) {
-      setState({ kind: "error", error: problem });
+      dispatch({ type: "invalid", error: problem });
       return;
     }
     const controller = new AbortController();
     abortRef.current = controller;
+    // 취소했거나 새 요청이 시작됐으면 이 요청의 결과는 버린다.
+    const stale = () => controller.signal.aborted || abortRef.current !== controller;
     setSeconds(0);
-    setState({ kind: "loading", file });
+    dispatch({ type: "start", file });
     try {
       const form = new FormData();
       form.append("file", file);
@@ -71,32 +79,28 @@ export default function PdfSummarizer() {
         body: form,
         signal: controller.signal,
       });
+      if (stale()) return;
       let body: unknown = null;
       try {
         body = await res.json();
       } catch {
         body = null;
       }
-      const parsed = parseResponse(res.ok, body);
+      if (stale()) return;
+      const parsed = parseResponse(res.ok, body, res.status);
       if (parsed.ok) {
-        setState({
-          kind: "result",
+        dispatch({
+          type: "success",
           file,
           summary: parsed.data.summary,
           truncated: parsed.data.truncated,
         });
       } else {
-        setState({ kind: "error", error: parsed.error, file });
+        dispatch({ type: "failure", error: parsed.error, file });
       }
-    } catch (e) {
-      if (
-        controller.signal.aborted ||
-        (e instanceof DOMException && e.name === "AbortError")
-      ) {
-        setState({ kind: "upload", notice: "요약을 취소했습니다." });
-      } else {
-        setState({ kind: "error", error: NETWORK_ERROR, file });
-      }
+    } catch {
+      if (stale()) return;
+      dispatch({ type: "failure", error: NETWORK_ERROR, file });
     }
   }
 
@@ -107,11 +111,29 @@ export default function PdfSummarizer() {
   }
 
   function reset() {
-    setState({ kind: "upload" });
+    dispatch({ type: "reset" });
   }
+
+  function cancel() {
+    abortRef.current?.abort();
+    dispatch({ type: "cancel" });
+  }
+
+  // 늘 있는 live 영역 하나의 글자만 바꿔 화면 낭독기에 알린다.
+  const liveMessage =
+    state.kind === "upload"
+      ? (state.notice ?? "")
+      : state.kind === "loading"
+        ? seconds >= 30
+          ? "요약하는 중입니다. 평소보다 오래 걸리고 있습니다."
+          : "요약하는 중입니다."
+        : "";
 
   return (
     <div className="card">
+      <p className="visually-hidden" role="status" aria-live="polite">
+        {liveMessage}
+      </p>
       <input
         ref={inputRef}
         className="visually-hidden"
@@ -129,6 +151,7 @@ export default function PdfSummarizer() {
             강의 자료나 논문 PDF를 올리면 핵심 내용을 한국어로 요약해 드립니다.
           </p>
           <div
+            ref={dropzoneRef}
             className={`dropzone${dragging ? " dragging" : ""}`}
             role="button"
             tabIndex={0}
@@ -142,9 +165,13 @@ export default function PdfSummarizer() {
             }}
             onDragOver={(e) => {
               e.preventDefault();
+              e.dataTransfer.dropEffect = "copy";
               setDragging(true);
             }}
-            onDragLeave={() => setDragging(false)}
+            onDragLeave={(e) => {
+              if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
+              setDragging(false);
+            }}
             onDrop={(e) => {
               e.preventDefault();
               setDragging(false);
@@ -164,9 +191,7 @@ export default function PdfSummarizer() {
             올린 파일은 저장되지 않습니다. 올린 PDF의 글자는 요약을 위해 외부 AI
             서비스로 전달됩니다.
           </p>
-          <p className="notice" role="status" aria-live="polite">
-            {state.notice}
-          </p>
+          <p className="notice">{state.notice}</p>
         </section>
       )}
 
@@ -180,13 +205,13 @@ export default function PdfSummarizer() {
           </p>
           <div className="spinner-row">
             <span className="spinner" aria-hidden="true" />
-            <span>{seconds}초 지났습니다</span>
+            <span>{seconds}초 지났습니다.</span>
           </div>
-          <p role="status" aria-live="polite" className="hint">
+          <p className="hint">
             요약하는 중입니다. 문서 길이와 서버 상황에 따라 시간이 걸릴 수 있습니다.
           </p>
           {seconds >= 30 && (
-            <p role="status" aria-live="polite" className="hint">
+            <p className="hint">
               무료 AI 모델을 쓰고 있어 평소보다 오래 걸릴 수 있습니다. 조금만
               기다려 주세요.
             </p>
@@ -195,7 +220,7 @@ export default function PdfSummarizer() {
             <button
               type="button"
               className="btn secondary"
-              onClick={() => abortRef.current?.abort()}
+              onClick={cancel}
             >
               취소
             </button>
@@ -209,7 +234,7 @@ export default function PdfSummarizer() {
             요약 결과
           </h1>
           <p className="file">{state.file.name}</p>
-          {state.truncated && <p className="badge">앞부분만 요약했습니다</p>}
+          {state.truncated && <p className="badge">앞부분만 요약했습니다.</p>}
           <h2>한 줄 요약</h2>
           <p className="oneline">{state.summary.oneLine}</p>
           <h2>핵심 개념</h2>
@@ -234,14 +259,14 @@ export default function PdfSummarizer() {
               ))}
             </dl>
           )}
-          <p className="hint">
-            AI가 만든 요약이므로 중요한 내용은 원문과 함께 확인하세요.
-          </p>
           <div className="actions">
             <button type="button" className="btn" onClick={reset}>
               다른 PDF 올리기
             </button>
           </div>
+          <p className="hint">
+            AI가 만든 요약이므로 중요한 내용은 원문과 함께 확인하세요.
+          </p>
         </section>
       )}
 
